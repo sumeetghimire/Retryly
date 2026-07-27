@@ -50,7 +50,7 @@ export default function Payers() {
       <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
         {payers.length === 0 ? (
           <div className="py-20 text-center">
-            <div className="text-slate-600 text-sm">No payers yet</div>
+            <div className="text-slate-500 text-sm">No payers yet — connect your Pinch account</div>
             <div className="text-slate-600 text-xs mt-1">Run Seed Test Data in Sandbox to get started</div>
           </div>
         ) : (
@@ -70,7 +70,13 @@ export default function Payers() {
                     <td className="px-5 py-4">
                       <div className="flex items-center gap-3">
                         <Avatar name={p.name} />
-                        <span className="text-sm font-medium text-white">{p.name}</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-medium text-white">{p.name}</span>
+                          <span
+                            title={`Risk score: ${p.risk_score === 'high' ? '60+' : p.risk_score === 'medium' ? '30-59' : '0-29'}/100`}
+                            className={`w-2 h-2 rounded-full ${p.risk_score === 'high' ? 'bg-red-500' : p.risk_score === 'medium' ? 'bg-yellow-400' : 'bg-emerald-500'}`}
+                          />
+                        </div>
                       </div>
                     </td>
                     <td className="px-5 py-4 text-sm text-slate-400">{p.email}</td>

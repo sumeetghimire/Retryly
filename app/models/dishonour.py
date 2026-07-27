@@ -1,5 +1,5 @@
-from datetime import datetime
-from sqlalchemy import String, DateTime, Text, ForeignKey
+from datetime import datetime, date
+from sqlalchemy import String, DateTime, Date, Text, ForeignKey, JSON, Integer, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -21,6 +21,26 @@ class Dishonour(Base):
     status: Mapped[str] = mapped_column(String(50), default="pending")
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Prompt 3 — Smart retry timing
+    retry_scheduled_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    retry_timing_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # Prompt 4 — Payment plans
+    plan_options: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    plan_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    plan_accepted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Prompt 5 — Payment links
+    payment_link_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    payment_link_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    payment_link_status: Mapped[str] = mapped_column(String(20), default="sent")
+
+    # Prompt 8 — Retry governance + idempotency
+    retry_attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    max_retries_reached: Mapped[bool] = mapped_column(Boolean, default=False)
+    nonce: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     payment: Mapped["Payment"] = relationship("Payment", back_populates="dishonours")
     payer: Mapped["Payer"] = relationship("Payer", back_populates="dishonours")

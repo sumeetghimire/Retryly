@@ -14,6 +14,9 @@ if config.config_file_name is not None:
 
 from app.database import Base
 from app.models import Payer, PaymentSource, Payment, Dishonour  # noqa
+from app.models.user import User  # noqa
+from app.models.session import Session  # noqa
+from app.models.user_settings import UserSettings  # noqa
 
 target_metadata = Base.metadata
 

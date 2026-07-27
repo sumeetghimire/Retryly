@@ -125,13 +125,89 @@ class PinchService:
             "frequency": frequency,
         })
 
-    async def create_payment_link(self, payer_id: str, amount_cents: int, description: str) -> dict:
+    async def get_payers(self, limit: int = 50) -> dict:
+        return await self._request("GET", "/payers", params={"limit": limit})
+
+    async def create_payment_link(
+        self,
+        payer_id: str,
+        amount_cents: int,
+        description: str,
+        expires_in_days: int = 7,
+        reference: str | None = None,
+    ) -> dict:
         """Create a Pinch Payment Link for customer re-authorisation."""
-        return await self._request("POST", "/payment-links", json={
+        from datetime import datetime, timedelta
+        expires_at = (datetime.utcnow() + timedelta(days=expires_in_days)).strftime("%Y-%m-%d")
+        payload: dict = {
             "payerId": payer_id,
             "amount": amount_cents,
             "description": description,
+            "expiresAt": expires_at,
+        }
+        if reference:
+            payload["reference"] = reference
+        return await self._request("POST", "/payment-links", json=payload)
+
+    async def get_plan_options(self, total_amount_cents: int) -> list[dict]:
+        """Return 3 payment plan options using Pinch calculate-plan-payments."""
+        options = []
+        configs = [
+            (2, "fortnightly", False),
+            (3, "fortnightly", True),
+            (4, "monthly", False),
+        ]
+        for num, freq, recommended in configs:
+            try:
+                result = await self.calculate_plan_payments(total_amount_cents, num, freq)
+                options.append({
+                    "num_payments": num,
+                    "frequency": freq,
+                    "recommended": recommended,
+                    "amount_per_payment": total_amount_cents // num,
+                    "total": total_amount_cents,
+                    "raw": result,
+                })
+            except Exception:
+                options.append({
+                    "num_payments": num,
+                    "frequency": freq,
+                    "recommended": recommended,
+                    "amount_per_payment": total_amount_cents // num,
+                    "total": total_amount_cents,
+                })
+        return options
+
+    async def create_payment_plan(
+        self,
+        payer_id: str,
+        source_id: str,
+        total_amount_cents: int,
+        num_payments: int,
+        frequency: str,
+    ) -> dict:
+        """Create a payment plan via Pinch subscriptions."""
+        return await self._request("POST", "/subscriptions", json={
+            "payerId": payer_id,
+            "paymentSourceId": source_id,
+            "amount": total_amount_cents // num_payments,
+            "frequency": frequency,
+            "numberOfPayments": num_payments,
         })
+
+    async def calculate_fees(self, amount_cents: int, payment_type: str = "becs") -> dict:
+        """Calculate Pinch fees for a payment amount."""
+        try:
+            return await self._request("GET", "/calculate-fees", params={
+                "amount": amount_cents,
+                "paymentType": payment_type,
+            })
+        except Exception:
+            if payment_type == "becs":
+                fee = min(int(amount_cents * 0.01) + 30, 500)
+            else:
+                fee = int(amount_cents * 0.0195) + 30
+            return {"fee": fee}
 
     async def retry_payment(self, payer_id: str, source_id: str,
                             amount_cents: int, description: str) -> dict:

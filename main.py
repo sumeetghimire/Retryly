@@ -1,9 +1,18 @@
+import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from app.database import init_db
 from app.routers import webhook, dashboard, dishonours, payers, demo, export
+from app.routers import auth, onboarding, risk, surcharge_advisor
+
+_start_time = time.time()
+limiter = Limiter(key_func=get_remote_address)
 
 
 @asynccontextmanager
@@ -18,6 +27,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,6 +37,7 @@ app.add_middleware(
         "http://localhost:3000",
         "https://ghivo.online",
         "https://www.ghivo.online",
+        "https://retryly.com.au",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -38,6 +50,10 @@ app.include_router(dishonours.router, prefix="/api", tags=["Dishonours"])
 app.include_router(payers.router, prefix="/api", tags=["Payers"])
 app.include_router(demo.router, prefix="/api", tags=["Demo"])
 app.include_router(export.router, prefix="/api", tags=["Export"])
+app.include_router(auth.router)
+app.include_router(onboarding.router)
+app.include_router(risk.router)
+app.include_router(surcharge_advisor.router)
 
 
 @app.get("/api/health", tags=["Health"])
@@ -73,10 +89,16 @@ async def health():
     except Exception:
         db_status = "error"
 
+    all_ok = all(s == "connected" for s in [pinch_status, claude_status, db_status])
+    any_error = any(s == "error" for s in [pinch_status, claude_status, db_status])
+
     return {
-        "pinch": pinch_status,
-        "claude": claude_status,
+        "status": "healthy" if all_ok else ("degraded" if not any_error else "down"),
+        "pinch_api": pinch_status,
+        "claude_api": claude_status,
         "database": db_status,
         "environment": settings.APP_ENV,
         "demo_mode": settings.DEMO_MODE,
+        "version": "1.0.0",
+        "uptime_seconds": int(time.time() - _start_time),
     }
