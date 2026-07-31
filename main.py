@@ -46,9 +46,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:3000",
-        "https://ghivo.online",
-        "https://www.ghivo.online",
-        "https://retryly.com.au",
+        "https://retryly.online",
+        "https://www.retryly.online",
     ],
     allow_credentials=True,
     allow_methods=["*"],
