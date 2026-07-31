@@ -50,6 +50,7 @@ export const updateProfile = (data) => api.patch('/api/settings/profile', data)
 export const updateRecovery = (data) => api.patch('/api/settings/recovery', data)
 export const reconnectPinch = (pinch_api_key, pinch_app_id, mode) => api.post('/api/settings/connect-pinch', { pinch_api_key, pinch_app_id, mode })
 export const disconnectPinch = () => api.delete('/api/settings/disconnect-pinch')
+export const syncPinch = () => api.post('/api/settings/sync-pinch')
 export const deleteAccount = () => api.delete('/api/settings/account')
 
 // Cash Flow Forecast

@@ -4,7 +4,7 @@ import toast from 'react-hot-toast'
 import { useAuth } from '../context/AuthContext'
 import {
   getSettings, updateProfile, updateRecovery,
-  reconnectPinch, disconnectPinch, deleteAccount,
+  reconnectPinch, disconnectPinch, deleteAccount, syncPinch,
 } from '../api'
 
 // ── Small reusable bits ───────────────────────────────────────────────────────
@@ -44,6 +44,30 @@ function Toggle({ checked, onChange, label, description }) {
         />
       </button>
     </label>
+  )
+}
+
+function SyncBtn() {
+  const [syncing, setSyncing] = useState(false)
+  const handle = async () => {
+    setSyncing(true)
+    try {
+      const { data } = await syncPinch()
+      toast.success(`Synced ${data.synced_payers} payers, ${data.synced_payments} payments from Pinch`)
+    } catch {
+      toast.error('Sync failed — check your Pinch connection')
+    } finally {
+      setSyncing(false)
+    }
+  }
+  return (
+    <button
+      onClick={handle}
+      disabled={syncing}
+      className="text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+    >
+      {syncing ? 'Syncing…' : 'Sync from Pinch'}
+    </button>
   )
 }
 
@@ -341,14 +365,17 @@ export default function Settings() {
             <PinchStatusBadge connected={pinch.connected} status={pinch.merchant_status} />
           </div>
 
-          {/* Disconnect button */}
+          {/* Sync + Disconnect buttons */}
           {pinch.connected && (
-            <button
-              onClick={() => setShowDisconnectModal(true)}
-              className="text-xs font-semibold text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 px-3 py-1.5 rounded-lg transition-colors"
-            >
-              Disconnect Pinch account
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <SyncBtn />
+              <button
+                onClick={() => setShowDisconnectModal(true)}
+                className="text-xs font-semibold text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 px-3 py-1.5 rounded-lg transition-colors"
+              >
+                Disconnect Pinch account
+              </button>
+            </div>
           )}
 
           {/* Connect / reconnect with API key */}

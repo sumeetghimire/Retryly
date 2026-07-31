@@ -186,6 +186,96 @@ async def disconnect_pinch(
     return {"disconnected": True}
 
 
+# ── POST /api/settings/sync-pinch ────────────────────────────────────────────
+
+@router.post("/sync-pinch")
+async def sync_pinch(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sync payers and scheduled payments from Pinch into local DB."""
+    if not user.pinch_api_key_encrypted:
+        raise HTTPException(status_code=400, detail="No Pinch account connected")
+
+    from app.routers.onboarding import decrypt_key
+    from app.models.payer import Payer
+    from app.models.payment import Payment
+    from sqlalchemy import select as sa_select
+
+    raw_key = decrypt_key(user.pinch_api_key_encrypted)
+    mode, app_id = "test", ""
+    if user.pinch_merchant_id and "|" in user.pinch_merchant_id:
+        mode, app_id = user.pinch_merchant_id.split("|", 1)
+
+    from app.services.credential_store import set_active_credentials
+    set_active_credentials(raw_key, app_id, mode)
+
+    synced_payers, synced_payments = 0, 0
+
+    try:
+        async with PinchService(api_key=raw_key, app_id=app_id, mode=mode) as pinch:
+            payer_resp = await pinch.get_payers(limit=200)
+            pinch_payers = payer_resp.get("data", payer_resp.get("items", []))
+
+            for p in pinch_payers:
+                pinch_id = str(p.get("id", ""))
+                if not pinch_id:
+                    continue
+                first = p.get("firstName", "") or ""
+                last = p.get("lastName", "") or ""
+                full_name = p.get("name") or f"{first} {last}".strip() or "Unknown"
+                email = p.get("email", "") or ""
+                phone = p.get("phone") or p.get("mobileNumber") or None
+
+                existing = await db.execute(sa_select(Payer).where(Payer.pinch_payer_id == pinch_id))
+                payer_row = existing.scalar_one_or_none()
+                if payer_row:
+                    payer_row.name = full_name
+                    payer_row.email = email
+                else:
+                    db.add(Payer(
+                        pinch_payer_id=pinch_id,
+                        name=full_name,
+                        email=email,
+                        phone=phone,
+                        payment_history={"on_time": 0, "failures": 0},
+                    ))
+                synced_payers += 1
+
+            await db.commit()
+
+            try:
+                pay_resp = await pinch.get_payments(limit=200, status="scheduled")
+                pinch_payments = pay_resp.get("data", pay_resp.get("items", []))
+                for pp in pinch_payments:
+                    pinch_pay_id = str(pp.get("id", ""))
+                    if not pinch_pay_id:
+                        continue
+                    existing_pay = await db.execute(sa_select(Payment).where(Payment.pinch_payment_id == pinch_pay_id))
+                    if existing_pay.scalar_one_or_none():
+                        continue
+                    payer_id_str = str(pp.get("payerId", "") or "")
+                    payer_db = await db.execute(sa_select(Payer).where(Payer.pinch_payer_id == payer_id_str))
+                    payer_db_row = payer_db.scalar_one_or_none()
+                    if not payer_db_row:
+                        continue
+                    db.add(Payment(
+                        payer_id=payer_db_row.id,
+                        pinch_payment_id=pinch_pay_id,
+                        amount_cents=int(pp.get("amount", 0)),
+                        status="scheduled",
+                    ))
+                    synced_payments += 1
+                await db.commit()
+            except Exception as e:
+                logger.warning(f"Payment sync failed (non-fatal): {e}")
+
+    except PinchAPIException as e:
+        raise HTTPException(status_code=502, detail=f"Pinch API error: {e}")
+
+    return {"synced_payers": synced_payers, "synced_payments": synced_payments}
+
+
 # ── DELETE /api/settings/account ─────────────────────────────────────────────
 
 @router.delete("/account")
