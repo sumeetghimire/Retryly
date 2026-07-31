@@ -39,7 +39,7 @@ export default function SurchargeAdvisor() {
   )
 
   return (
-    <div className="p-8 max-w-5xl">
+    <div className="p-4 md:p-8 max-w-5xl">
       <div className="flex items-start justify-between mb-8">
         <div>
           <div className="flex items-center gap-2 mb-1">
@@ -54,7 +54,7 @@ export default function SurchargeAdvisor() {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
           <div className="text-xs text-slate-500 uppercase tracking-wide font-medium mb-2">Monthly card fees</div>
           <div className="text-2xl font-bold text-red-400">{formatCents(data.total_monthly_card_fees_cents)}</div>
@@ -76,7 +76,7 @@ export default function SurchargeAdvisor() {
         <div className="flex items-center gap-2 mb-3">
           <span>💡</span>
           <span className="text-xs font-semibold text-yellow-400 uppercase tracking-wide">AI Insight</span>
-          <span className="ml-auto text-[10px] text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 px-1.5 py-0.5 rounded font-medium">Claude</span>
+          <span className="ml-auto text-[10px] text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 px-1.5 py-0.5 rounded font-medium">AI</span>
         </div>
         <p className="text-slate-300 text-sm leading-relaxed">{data.claude_insight}</p>
       </div>

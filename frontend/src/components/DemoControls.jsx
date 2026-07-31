@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { demoSeed, demoTrigger, demoTimeTravel, demoReset } from '../api'
+import { demoSeed, demoTrigger, demoTimeTravel, demoReset, sendPreDebitReminders } from '../api'
 import { Icons } from './Icons'
 
 function Toast({ msg, type, onDismiss }) {
@@ -62,6 +62,14 @@ const buttons = [
     icon: Icons.clock,
     fn: demoTimeTravel,
     success: 'Retrying payments advanced',
+  },
+  {
+    key: 'reminders',
+    label: 'Send Pre-Debit Reminders',
+    description: 'Email at-risk payers before payment date',
+    icon: Icons.send,
+    fn: sendPreDebitReminders,
+    success: 'Pre-debit reminders sent',
   },
   {
     key: 'reset',

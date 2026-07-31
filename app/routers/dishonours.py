@@ -43,6 +43,8 @@ class DishonourItem(BaseModel):
     # Prompt 8
     retry_attempt_count: int = 0
     max_retries_reached: bool = False
+    # Internal notes
+    internal_note: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -102,6 +104,7 @@ async def list_dishonours(
             payment_link_status=dishonour.payment_link_status or "sent",
             retry_attempt_count=dishonour.retry_attempt_count or 0,
             max_retries_reached=dishonour.max_retries_reached or False,
+            internal_note=dishonour.internal_note,
         ))
 
     count_query = select(func.count(Dishonour.id))
@@ -139,7 +142,9 @@ async def approve_retry(dishonour_id: int, db: AsyncSession = Depends(get_db)):
     retry_date, timing_reason = sched.calculate_optimal_retry_date(dishonour.reason_code, payer, date.today())
 
     try:
-        async with PinchService() as pinch:
+        from app.services.credential_store import get_active_credentials
+        _k, _a, _m = get_active_credentials()
+        async with PinchService(api_key=_k, app_id=_a, mode=_m) as pinch:
             attempt_num = (dishonour.retry_attempt_count or 0) + 1
             nonce = f"retryly-{dishonour.id}-attempt-{attempt_num}"
             retry = await pinch.schedule_payment(
@@ -197,7 +202,9 @@ async def accept_plan(dishonour_id: int, body: dict, db: AsyncSession = Depends(
     source_id = source.pinch_source_id if source else ""
 
     try:
-        async with PinchService() as pinch:
+        from app.services.credential_store import get_active_credentials
+        _k, _a, _m = get_active_credentials()
+        async with PinchService(api_key=_k, app_id=_a, mode=_m) as pinch:
             plan = await pinch.create_payment_plan(
                 payer_id=payer.pinch_payer_id,
                 source_id=source_id,
@@ -233,7 +240,9 @@ async def resend_payment_link(dishonour_id: int, db: AsyncSession = Depends(get_
     amount_cents = payment.amount_cents if payment else 0
 
     try:
-        async with PinchService() as pinch:
+        from app.services.credential_store import get_active_credentials
+        _k, _a, _m = get_active_credentials()
+        async with PinchService(api_key=_k, app_id=_a, mode=_m) as pinch:
             link_data = await pinch.create_payment_link(
                 payer_id=payer.pinch_payer_id,
                 amount_cents=amount_cents,
@@ -273,13 +282,33 @@ async def get_audit_log(dishonour_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/dishonours/{dishonour_id}/send-message")
 async def send_message(dishonour_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Dishonour).where(Dishonour.id == dishonour_id))
-    dishonour = result.scalar_one_or_none()
-    if not dishonour:
+    result = await db.execute(
+        select(Dishonour, Payer)
+        .outerjoin(Payer, Dishonour.payer_id == Payer.id)
+        .where(Dishonour.id == dishonour_id)
+    )
+    row = result.first()
+    if not row:
         raise HTTPException(status_code=404, detail="Dishonour not found")
+    dishonour, payer = row
+
+    email_sent = False
+    if payer and payer.email and dishonour.claude_customer_message:
+        from app.services.email_service import EmailService
+        emailer = EmailService()
+        email_sent = await emailer.send_customer_message(
+            payer_email=payer.email,
+            payer_name=payer.name,
+            claude_message=dishonour.claude_customer_message,
+        )
+
     dishonour.status = "message_sent"
     await db.commit()
-    return {"status": "sent", "message": dishonour.claude_customer_message}
+    return {
+        "status": "sent",
+        "email_sent": email_sent,
+        "message": dishonour.claude_customer_message,
+    }
 
 
 @router.post("/dishonours/{dishonour_id}/mark-resolved")
@@ -304,3 +333,41 @@ async def write_off(dishonour_id: int, db: AsyncSession = Depends(get_db)):
     dishonour.resolved_at = datetime.utcnow()
     await db.commit()
     return {"status": "written_off"}
+
+
+@router.patch("/dishonours/{dishonour_id}/note")
+async def update_note(dishonour_id: int, body: dict, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Dishonour).where(Dishonour.id == dishonour_id))
+    dishonour = result.scalar_one_or_none()
+    if not dishonour:
+        raise HTTPException(status_code=404, detail="Dishonour not found")
+    dishonour.internal_note = body.get("note", "").strip() or None
+    await db.commit()
+    return {"status": "ok", "internal_note": dishonour.internal_note}
+
+
+class BulkActionBody(BaseModel):
+    ids: list[int]
+    action: str  # "resolve", "write_off", "approve_retry"
+
+
+@router.post("/dishonours/bulk")
+async def bulk_action(body: BulkActionBody, db: AsyncSession = Depends(get_db)):
+    if body.action not in ("resolve", "write_off"):
+        raise HTTPException(status_code=400, detail="action must be resolve or write_off")
+
+    result = await db.execute(select(Dishonour).where(Dishonour.id.in_(body.ids)))
+    dishonours = result.scalars().all()
+
+    updated = 0
+    for d in dishonours:
+        if body.action == "resolve":
+            d.status = "recovered"
+            d.resolved_at = datetime.utcnow()
+        elif body.action == "write_off":
+            d.status = "written_off"
+            d.resolved_at = datetime.utcnow()
+        updated += 1
+
+    await db.commit()
+    return {"updated": updated, "action": body.action}

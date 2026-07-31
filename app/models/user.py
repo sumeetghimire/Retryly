@@ -15,5 +15,10 @@ class User(Base):
     onboarding_complete: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    # Managed Merchant fields
+    pinch_merchant_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    pinch_merchant_status: Mapped[str] = mapped_column(String(20), default="pending")
+    onboarding_type: Mapped[str] = mapped_column(String(20), default="managed")
+
     sessions: Mapped[list["Session"]] = relationship("Session", back_populates="user")
     settings: Mapped["UserSettings | None"] = relationship("UserSettings", back_populates="user", uselist=False)

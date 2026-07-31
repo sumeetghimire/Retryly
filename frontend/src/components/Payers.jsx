@@ -33,8 +33,8 @@ export default function Payers() {
   )
 
   return (
-    <div className="p-8 max-w-6xl">
-      <div className="flex items-center justify-between mb-8">
+    <div className="p-4 md:p-8 max-w-6xl">
+      <div className="flex items-center justify-between mb-6 md:mb-8">
         <div>
           <h1 className="text-xl font-semibold text-white">Payers</h1>
           <p className="text-slate-500 text-sm mt-0.5">{payers.length} customer{payers.length !== 1 ? 's' : ''} on record</p>

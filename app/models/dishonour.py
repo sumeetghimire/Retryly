@@ -42,5 +42,8 @@ class Dishonour(Base):
     max_retries_reached: Mapped[bool] = mapped_column(Boolean, default=False)
     nonce: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
+    # Internal notes
+    internal_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     payment: Mapped["Payment"] = relationship("Payment", back_populates="dishonours")
     payer: Mapped["Payer"] = relationship("Payer", back_populates="dishonours")

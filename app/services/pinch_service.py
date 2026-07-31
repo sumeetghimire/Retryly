@@ -8,8 +8,16 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-PINCH_BASE_URL = "https://api.getpinch.com.au/test"
 PINCH_AUTH_URL = "https://auth.getpinch.com.au/connect/token"
+PINCH_API_ROOT = "https://api.getpinch.com.au"
+
+
+def _pinch_base_url(mode: str) -> str:
+    """Return the correct Pinch base URL for the given mode ('test' or 'live').
+    Trailing slash is required so httpx concatenates relative paths correctly.
+    """
+    m = mode if mode in ("test", "live") else "test"
+    return f"{PINCH_API_ROOT}/{m}/"
 
 
 class PinchAPIException(Exception):
@@ -29,8 +37,10 @@ def _next_business_day(start: date, days: int) -> date:
     return current
 
 
-async def _get_access_token() -> str:
+async def _get_access_token(app_id: str | None = None, api_key: str | None = None) -> str:
     """Exchange App ID + Secret Key for a Bearer token."""
+    _app_id = app_id or settings.PINCH_APP_ID
+    _api_key = api_key or settings.PINCH_API_KEY
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(
             PINCH_AUTH_URL,
@@ -38,7 +48,7 @@ async def _get_access_token() -> str:
                 "grant_type": "client_credentials",
                 "scope": "api1",
             },
-            auth=(settings.PINCH_APP_ID, settings.PINCH_API_KEY),
+            auth=(_app_id, _api_key),
         )
         if not response.is_success:
             raise PinchAPIException(response.status_code, response.text)
@@ -51,13 +61,18 @@ async def _get_access_token() -> str:
 
 
 class PinchService:
-    def __init__(self):
+    def __init__(self, api_key: str | None = None, app_id: str | None = None, mode: str | None = None):
+        self._api_key = api_key  # None → falls back to settings.PINCH_API_KEY
+        self._app_id = app_id   # None → falls back to settings.PINCH_APP_ID
+        # mode: "test" or "live". None → falls back to settings.PINCH_MODE
+        self._mode = mode or settings.PINCH_MODE
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self):
-        token = await _get_access_token()
+        token = await _get_access_token(self._app_id, self._api_key)
+        base_url = _pinch_base_url(self._mode)
         self._client = httpx.AsyncClient(
-            base_url=PINCH_BASE_URL,
+            base_url=base_url,
             headers={"Authorization": f"Bearer {token}"},
             timeout=30.0,
         )
@@ -83,7 +98,7 @@ class PinchService:
 
     async def create_payer(self, first_name: str, last_name: str, email: str,
                            phone: str, reference: str) -> dict:
-        return await self._request("POST", "/payers", json={
+        return await self._request("POST", "payers", json={
             "firstName": first_name,
             "lastName": last_name,
             "email": email,
@@ -93,7 +108,7 @@ class PinchService:
 
     async def create_payment_source(self, payer_id: str, bsb: str,
                                     account_number: str, account_name: str) -> dict:
-        return await self._request("POST", "/payment-sources", json={
+        return await self._request("POST", "payment-sources", json={
             "payerId": payer_id,
             "bsb": bsb,
             "accountNumber": account_number,
@@ -102,7 +117,7 @@ class PinchService:
 
     async def schedule_payment(self, payer_id: str, source_id: str, amount_cents: int,
                                scheduled_date: str, description: str, reference: str) -> dict:
-        return await self._request("POST", "/payments", json={
+        return await self._request("POST", "payments", json={
             "payerId": payer_id,
             "paymentSourceId": source_id,
             "amount": amount_cents,
@@ -112,21 +127,27 @@ class PinchService:
         })
 
     async def get_events(self, event_type: str = "bank-results", limit: int = 50) -> dict:
-        return await self._request("GET", "/events", params={
+        return await self._request("GET", "events", params={
             "type": event_type,
             "limit": limit,
         })
 
     async def calculate_plan_payments(self, total_amount_cents: int,
                                       num_payments: int, frequency: str) -> dict:
-        return await self._request("GET", "/payments/calculate-plan-payments", params={
+        return await self._request("GET", "payments/calculate-plan-payments", params={
             "totalAmount": total_amount_cents,
             "numberOfPayments": num_payments,
             "frequency": frequency,
         })
 
     async def get_payers(self, limit: int = 50) -> dict:
-        return await self._request("GET", "/payers", params={"limit": limit})
+        return await self._request("GET", "payers", params={"limit": limit})
+
+    async def get_payments(self, limit: int = 100, status: str | None = None) -> dict:
+        params: dict = {"limit": limit}
+        if status:
+            params["status"] = status
+        return await self._request("GET", "payments", params=params)
 
     async def create_payment_link(
         self,
@@ -147,7 +168,7 @@ class PinchService:
         }
         if reference:
             payload["reference"] = reference
-        return await self._request("POST", "/payment-links", json=payload)
+        return await self._request("POST", "payment-links", json=payload)
 
     async def get_plan_options(self, total_amount_cents: int) -> list[dict]:
         """Return 3 payment plan options using Pinch calculate-plan-payments."""
@@ -187,7 +208,7 @@ class PinchService:
         frequency: str,
     ) -> dict:
         """Create a payment plan via Pinch subscriptions."""
-        return await self._request("POST", "/subscriptions", json={
+        return await self._request("POST", "subscriptions", json={
             "payerId": payer_id,
             "paymentSourceId": source_id,
             "amount": total_amount_cents // num_payments,
@@ -198,7 +219,7 @@ class PinchService:
     async def calculate_fees(self, amount_cents: int, payment_type: str = "becs") -> dict:
         """Calculate Pinch fees for a payment amount."""
         try:
-            return await self._request("GET", "/calculate-fees", params={
+            return await self._request("GET", "calculate-fees", params={
                 "amount": amount_cents,
                 "paymentType": payment_type,
             })
@@ -220,6 +241,49 @@ class PinchService:
             description=f"[RETRY] {description}",
             reference=f"RETRY-{retry_date.isoformat()}",
         )
+
+    # ── Webhook management ────────────────────────────────────────────────────
+
+    async def register_webhook(self, url: str, events: list[str] | None = None) -> dict:
+        """
+        Register Retryly's webhook URL with this merchant's Pinch account.
+        Called automatically after connect-api-key or when a managed merchant activates.
+        The SMB never needs to touch their Pinch portal.
+        """
+        payload: dict = {"url": url}
+        if events:
+            payload["events"] = events
+        return await self._request("POST", "webhooks", json=payload)
+
+    async def list_webhooks(self) -> dict:
+        return await self._request("GET", "webhooks")
+
+    # ── Managed Merchant API ──────────────────────────────────────────────────
+
+    async def create_managed_merchant(self, business_details: dict) -> dict:
+        """
+        Create a sub-merchant under Retryly's platform account.
+        Uses the master Pinch credentials (PINCH_MASTER_API_KEY).
+        Pinch activates within ~24h via KYC.
+        """
+        return await self._request("POST", "managed-merchants", json={
+            "businessName": business_details["business_name"],
+            "abn": business_details["abn"],
+            "contactEmail": business_details["contact_email"],
+            "contactPhone": business_details["contact_phone"],
+            "contactFirstName": business_details["contact_first_name"],
+            "contactLastName": business_details["contact_last_name"],
+        })
+
+    async def get_managed_merchant_status(self, merchant_id: str) -> dict:
+        """
+        Poll activation status for a managed sub-merchant.
+        Returns: { status, activationStatus, apiKey }
+        The apiKey is present only when activationStatus == "active".
+        """
+        return await self._request("GET", f"managed-merchants/{merchant_id}")
+
+    # ── Seed helpers ──────────────────────────────────────────────────────────
 
     async def seed_test_data(self) -> list[dict]:
         results = []

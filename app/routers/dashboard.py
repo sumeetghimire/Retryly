@@ -33,6 +33,17 @@ class RecentActivity(BaseModel):
     created_at: datetime
 
 
+class RetryQueueItem(BaseModel):
+    dishonour_id: int
+    payer_name: str
+    amount_cents: int
+    reason_label: str
+    retry_scheduled_date: date | None
+    days_until_retry: int | None
+    retry_timing_reason: str | None
+    retry_attempt_count: int
+
+
 class MonthlyTrend(BaseModel):
     month: str
     recovered: int
@@ -70,8 +81,10 @@ class DashboardResponse(BaseModel):
     plans_total_value_cents: int = 0
     without_retryly_loss_cents: int = 0
     retryly_saved_cents: int = 0
+    total_recovered_all_time_cents: int = 0
     monthly_trend: list[MonthlyTrend] = []
     surcharge_ban_impact: SurchargeBanImpact | None = None
+    retry_queue: list[RetryQueueItem] = []
 
 
 @router.get("/dashboard", response_model=DashboardResponse)
@@ -116,15 +129,33 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
 
     # Projected recovery: sum of amounts in "retrying" status
     retrying_result = await db.execute(
-        select(Dishonour, Payment)
+        select(Dishonour, Payment, Payer)
         .outerjoin(Payment, Dishonour.payment_id == Payment.id)
+        .outerjoin(Payer, Dishonour.payer_id == Payer.id)
         .where(Dishonour.status == "retrying")
+        .order_by(Dishonour.retry_scheduled_date.asc())
     )
     retrying_rows = retrying_result.all()
     projected_recovery_cents = sum(
         (row[1].amount_cents if row[1] else 0) for row in retrying_rows
     )
     projected_recovery_date = _next_business_day(date.today(), 4).strftime("%-d %b %Y")
+
+    retry_queue = []
+    for dishonour, payment, payer in retrying_rows:
+        days_until = None
+        if dishonour.retry_scheduled_date:
+            days_until = (dishonour.retry_scheduled_date - date.today()).days
+        retry_queue.append(RetryQueueItem(
+            dishonour_id=dishonour.id,
+            payer_name=payer.name if payer else "Unknown",
+            amount_cents=payment.amount_cents if payment else 0,
+            reason_label=dishonour.reason_label,
+            retry_scheduled_date=dishonour.retry_scheduled_date,
+            days_until_retry=days_until,
+            retry_timing_reason=dishonour.retry_timing_reason,
+            retry_attempt_count=dishonour.retry_attempt_count,
+        ))
 
     # High risk payers: failures >= 2 in payment_history
     all_payers_result = await db.execute(select(Payer))
@@ -220,6 +251,14 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
     )
     plans_total_value_cents = plans_value_result.scalar() or 0
 
+    # All-time recovery total
+    all_time_recovered_result = await db.execute(
+        select(func.sum(Payment.amount_cents))
+        .join(Dishonour, Dishonour.payment_id == Payment.id)
+        .where(Dishonour.status == "recovered")
+    )
+    total_recovered_all_time_cents = all_time_recovered_result.scalar() or 0
+
     # Recovery impact: AU SMB 63% failure rate estimate
     total_payments_cents = total_collected + total_at_risk
     without_retryly_loss_cents = int(total_payments_cents * 0.63)
@@ -232,11 +271,12 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
     recovered_all = recovered_result.scalars().all()
     avg_days = 0.0
     if recovered_all:
-        days_list = [
-            (d.resolved_at - d.created_at).days for d in recovered_all
+        deltas = [
+            (d.resolved_at - d.created_at).total_seconds() / 86400
+            for d in recovered_all
             if d.resolved_at and d.created_at
         ]
-        avg_days = round(sum(days_list) / len(days_list), 1) if days_list else 0.0
+        avg_days = round(sum(deltas) / len(deltas), 1) if deltas else 0.0
 
     # Top dishonour reason
     top_reason_result = await db.execute(
@@ -305,6 +345,8 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
         plans_total_value_cents=plans_total_value_cents,
         without_retryly_loss_cents=without_retryly_loss_cents,
         retryly_saved_cents=retryly_saved_cents,
+        total_recovered_all_time_cents=total_recovered_all_time_cents,
         monthly_trend=monthly_trend,
         surcharge_ban_impact=surcharge_ban_impact,
+        retry_queue=retry_queue,
     )

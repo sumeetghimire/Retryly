@@ -9,7 +9,8 @@ from slowapi.errors import RateLimitExceeded
 
 from app.database import init_db
 from app.routers import webhook, dashboard, dishonours, payers, demo, export
-from app.routers import auth, onboarding, risk, surcharge_advisor
+from app.routers import auth, onboarding, risk, surcharge_advisor, reminders, settings
+from app.routers import cashflow as cashflow_router
 
 _start_time = time.time()
 limiter = Limiter(key_func=get_remote_address)
@@ -18,6 +19,16 @@ limiter = Limiter(key_func=get_remote_address)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # Restore the last connected user's Pinch credentials into the in-process store
+    # so background tasks (process_dishonours, retries) use the right API key after restart
+    try:
+        from app.database import AsyncSessionLocal
+        from app.services.credential_store import load_credentials_from_db
+        async with AsyncSessionLocal() as db:
+            await load_credentials_from_db(db)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Credential restore on startup failed (non-fatal): {e}")
     yield
 
 
@@ -54,6 +65,9 @@ app.include_router(auth.router)
 app.include_router(onboarding.router)
 app.include_router(risk.router)
 app.include_router(surcharge_advisor.router)
+app.include_router(reminders.router)
+app.include_router(settings.router)
+app.include_router(cashflow_router.router)
 
 
 @app.get("/api/health", tags=["Health"])

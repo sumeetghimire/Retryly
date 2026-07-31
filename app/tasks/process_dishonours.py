@@ -49,10 +49,13 @@ async def process_dishonours(payload: dict, db: AsyncSession) -> list[dict]:
     if not failed_payments:
         failed_payments = payload.get("failedPayments", [])
 
+    from app.services.credential_store import get_active_credentials
+    _cred_key, _cred_app_id, _cred_mode = get_active_credentials()
+
     for fp in failed_payments:
         pinch_payment_id = fp.get("paymentId") or fp.get("id")
         reason_code = fp.get("dishonourCode") or fp.get("reasonCode", "unknown")
-        amount_cents = fp.get("amount", 0)
+        amount_cents = int(fp.get("amount", 0))
 
         payment = None
         payer = None
@@ -69,6 +72,48 @@ async def process_dishonours(payload: dict, db: AsyncSession) -> list[dict]:
             )
             payer = result.scalar_one_or_none()
             amount_cents = payment.amount_cents
+
+        # If payment/payer not in DB (real webhook, no prior sync), create from payload
+        if not payer:
+            pinch_payer_id = str(fp.get("payerId") or fp.get("payer_id") or "")
+            if pinch_payer_id:
+                result = await db.execute(
+                    select(Payer).where(Payer.pinch_payer_id == pinch_payer_id)
+                )
+                payer = result.scalar_one_or_none()
+            if not payer:
+                # Build from webhook fields
+                raw_name = (
+                    fp.get("payerName")
+                    or fp.get("payer_name")
+                    or f"{fp.get('firstName', '')} {fp.get('lastName', '')}".strip()
+                    or "Unknown"
+                )
+                email = fp.get("payerEmail") or fp.get("email") or ""
+                phone = fp.get("payerPhone") or fp.get("phone") or None
+                if not pinch_payer_id:
+                    pinch_payer_id = f"webhook_{pinch_payment_id or 'unknown'}"
+                payer = Payer(
+                    pinch_payer_id=pinch_payer_id,
+                    name=raw_name,
+                    email=email,
+                    phone=phone,
+                    payment_history={"on_time": 0, "failures": 1},
+                )
+                db.add(payer)
+                await db.flush()  # get payer.id
+                logger.info(f"Created payer on-the-fly from webhook: {raw_name} ({pinch_payer_id})")
+
+        if not payment and pinch_payment_id and payer:
+            payment = Payment(
+                payer_id=payer.id,
+                pinch_payment_id=pinch_payment_id,
+                amount_cents=amount_cents,
+                status="failed",
+            )
+            db.add(payment)
+            await db.flush()
+            logger.info(f"Created payment on-the-fly from webhook: {pinch_payment_id} ${amount_cents/100:.2f}")
 
         classification = classifier.classify(reason_code)
         action = classification["action"]
@@ -154,7 +199,7 @@ async def process_dishonours(payload: dict, db: AsyncSession) -> list[dict]:
             attempt_num = 1  # new dishonour, so attempt 1
             nonce = f"retryly-{pinch_payment_id or 'unk'}-attempt-{attempt_num}"
             try:
-                async with PinchService() as pinch:
+                async with PinchService(api_key=_cred_key, app_id=_cred_app_id, mode=_cred_mode) as pinch:
                     retry = await pinch.schedule_payment(
                         payer_id=payer.pinch_payer_id,
                         source_id=fp.get("paymentSourceId", ""),
@@ -170,7 +215,7 @@ async def process_dishonours(payload: dict, db: AsyncSession) -> list[dict]:
 
         elif action == "plan":
             try:
-                async with PinchService() as pinch:
+                async with PinchService(api_key=_cred_key, app_id=_cred_app_id, mode=_cred_mode) as pinch:
                     plan_options_list = await pinch.get_plan_options(amount_cents)
                     plan_options = {"options": plan_options_list}
             except Exception as e:
@@ -185,7 +230,7 @@ async def process_dishonours(payload: dict, db: AsyncSession) -> list[dict]:
 
         elif action == "reauth" and payer:
             try:
-                async with PinchService() as pinch:
+                async with PinchService(api_key=_cred_key, app_id=_cred_app_id, mode=_cred_mode) as pinch:
                     link_data = await pinch.create_payment_link(
                         payer_id=payer.pinch_payer_id,
                         amount_cents=amount_cents,

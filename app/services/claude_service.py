@@ -7,6 +7,89 @@ logger = logging.getLogger(__name__)
 
 
 class ClaudeService:
+    # Fallback templates used when the Claude API is unavailable.
+    # App must never return an empty string or crash when Claude is down.
+    FALLBACK_EXPLANATIONS: dict[str, str] = {
+        "insufficient-funds": (
+            "{payer_name}'s payment of ${amount} failed due to insufficient funds. "
+            "A retry has been scheduled for {retry_date} — this type of failure is "
+            "recoverable in approximately 68% of cases."
+        ),
+        "account-closed": (
+            "{payer_name}'s payment of ${amount} could not be processed as the account "
+            "details are no longer valid. A secure link has been sent to update their details."
+        ),
+        "refer-to-payer": (
+            "{payer_name}'s payment of ${amount} was flagged by their bank. A retry has "
+            "been scheduled for {retry_date}. This is usually resolved automatically."
+        ),
+        "payment-stopped-temporarily": (
+            "{payer_name}'s payment of ${amount} has been temporarily stopped. "
+            "A retry has been scheduled for {retry_date}."
+        ),
+        "invalid-account": (
+            "{payer_name}'s payment of ${amount} failed due to invalid account details. "
+            "A secure update link has been sent to their email."
+        ),
+        "payment-stopped": (
+            "{payer_name}'s payment of ${amount} has been stopped. This requires your "
+            "attention — please review and contact the customer directly."
+        ),
+        "fraudulent-claim": (
+            "{payer_name}'s payment of ${amount} has been flagged. "
+            "This has been escalated for your immediate review."
+        ),
+        "default": (
+            "{payer_name}'s payment of ${amount} failed and has been flagged for review. "
+            "Please check the Agent Inbox for details."
+        ),
+    }
+
+    FALLBACK_CUSTOMER_MESSAGES: dict[str, str] = {
+        "insufficient-funds": (
+            "Subject: Payment Update — Action May Be Required\n\n"
+            "Hi {first_name},\n\n"
+            "We attempted to process your payment of ${amount} on {date} but were unable "
+            "to complete it.\n\n"
+            "We'll try again on {retry_date}. Please ensure sufficient funds are available "
+            "in your account.\n\n"
+            "If you have any questions, please don't hesitate to get in touch.\n\n"
+            "Kind regards,\n{business_name}"
+        ),
+        "account-closed": (
+            "Subject: Payment Details Update Required\n\n"
+            "Hi {first_name},\n\n"
+            "We had trouble processing your recent payment of ${amount}. It looks like "
+            "your payment details may need updating.\n\n"
+            "Please update your details here: {link}\n\n"
+            "This link expires in 7 days. If you need help, please contact us.\n\n"
+            "Kind regards,\n{business_name}"
+        ),
+        "refer-to-payer": (
+            "Subject: Payment Update\n\n"
+            "Hi {first_name},\n\n"
+            "Your payment of ${amount} was flagged by your bank. This is usually resolved "
+            "quickly and we'll try again on {retry_date}.\n\n"
+            "No action is needed from you at this stage.\n\n"
+            "Kind regards,\n{business_name}"
+        ),
+        "payment-stopped": (
+            "Subject: Urgent — Payment Assistance Required\n\n"
+            "Hi {first_name},\n\n"
+            "We've been unable to process your recent payment of ${amount} and would "
+            "appreciate your help in resolving this.\n\n"
+            "Please contact us at your earliest convenience.\n\n"
+            "Kind regards,\n{business_name}"
+        ),
+        "default": (
+            "Subject: Payment Update\n\n"
+            "Hi {first_name},\n\n"
+            "We had trouble processing your payment of ${amount}. Our team has been "
+            "notified and will be in touch shortly.\n\n"
+            "Kind regards,\n{business_name}"
+        ),
+    }
+
     def __init__(self):
         self._client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
@@ -71,9 +154,13 @@ class ClaudeService:
             return result
         except Exception as e:
             logger.error(f"Claude explain_dishonour failed: {e}")
-            return (
-                f"{payer_name}'s payment of ${amount_dollars:.2f} failed due to {reason_label}. "
-                f"Retryly has automatically taken action: {action_taken}."
+            template = self.FALLBACK_EXPLANATIONS.get(
+                reason_code, self.FALLBACK_EXPLANATIONS["default"]
+            )
+            return template.format(
+                payer_name=payer_name,
+                amount=f"{amount_dollars:.2f}",
+                retry_date=retry_date or "as soon as possible",
             )
 
     async def generate_customer_message(
@@ -185,12 +272,16 @@ class ClaudeService:
             return result
         except Exception as e:
             logger.error(f"Claude generate_customer_message failed: {e}")
-            return (
-                f"Subject: Payment Notification\n\n"
-                f"Hi {payer_first_name},\n\n"
-                f"We noticed your recent payment of ${amount_dollars:.2f} was unsuccessful. "
-                f"Please get in touch with us so we can resolve this together.\n\n"
-                f"Kind regards"
+            template = self.FALLBACK_CUSTOMER_MESSAGES.get(
+                reason_code, self.FALLBACK_CUSTOMER_MESSAGES["default"]
+            )
+            return template.format(
+                first_name=payer_first_name,
+                amount=f"{amount_dollars:.2f}",
+                date=failure_date,
+                retry_date=retry_date or "shortly",
+                link=payment_link_url or "[contact us to update]",
+                business_name="Your Business",
             )
 
     async def generate_pre_debit_reminder(self, payer_name: str, amount_cents: int, payment_date: str, failures: int) -> str:
@@ -275,6 +366,64 @@ class ClaudeService:
                 f"From 1 October 2026, you'll need to absorb card surcharge fees for your "
                 f"{payers_on_card} card-paying customers — costing approximately ${monthly_amount:.2f}/month. "
                 f"Switching them to Pinch direct debit now eliminates this cost entirely."
+            )
+
+    async def generate_cashflow_insight(
+        self,
+        best_case_cents: int,
+        worst_case_cents: int,
+        at_risk_cents: int,
+        retryly_recovers_cents: int,
+        biggest_risk_date: str,
+        biggest_risk_payers: list[str],
+        high_risk_count: int,
+    ) -> str:
+        """1-2 sentence plain-English cash flow risk summary for the next 14 days."""
+        best = best_case_cents / 100
+        worst = worst_case_cents / 100
+        at_risk = at_risk_cents / 100
+        recovers = retryly_recovers_cents / 100
+        payer_names = " and ".join(biggest_risk_payers) if biggest_risk_payers else "no identified payers"
+
+        user_prompt = (
+            f"Cash flow forecast for the next 14 days:\n"
+            f"Best case collections: ${best:,.2f}\n"
+            f"Worst case (if high-risk payments fail): ${worst:,.2f}\n"
+            f"Total at risk: ${at_risk:,.2f}\n"
+            f"Retryly can recover approximately: ${recovers:,.2f}\n"
+            f"High-risk payments: {high_risk_count}\n"
+            f"Biggest risk date: {biggest_risk_date}\n"
+            f"Highest risk payers on that date: {payer_names}\n\n"
+            f"Write 1-2 sentences summarising the biggest risk and what Retryly is already doing about it. "
+            f"Be specific about the dollar amount and date."
+        )
+
+        try:
+            response = await self._client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=150,
+                system=(
+                    "You are Retryly's AI cash flow advisor for an Australian small business. "
+                    "Write a 1-2 sentence plain-English summary of their payment risk for the next 14 days. "
+                    "Be direct, specific, and action-oriented. Use AUD dollar amounts. "
+                    "Australian English. Never use jargon. "
+                    "If the situation is healthy — say so positively. "
+                    "If there is risk — name it clearly and say what Retryly is doing about it."
+                ),
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            return response.content[0].text.strip()
+        except Exception as e:
+            logger.error(f"Claude cashflow_insight failed: {e}")
+            if at_risk_cents == 0:
+                return (
+                    f"Your next 14 days look healthy — ${best:,.2f} in scheduled payments "
+                    f"with no high-risk payers flagged. Retryly is monitoring all upcoming debits automatically."
+                )
+            return (
+                f"${at_risk:,.2f} is at risk over the next 14 days. "
+                f"Retryly is monitoring {high_risk_count} high-risk payment{'s' if high_risk_count != 1 else ''} "
+                f"and will act automatically if any fail."
             )
 
     async def generate_agent_summary(self, dishonours: list[dict]) -> str:
