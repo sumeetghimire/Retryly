@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = "postgresql+asyncpg://sumeerghimire@localhost:5432/retryly"
+    DATABASE_URL: str = ""
     PINCH_API_KEY: str = ""
     PINCH_APP_ID: str = ""
     PINCH_PUBLISHABLE_KEY: str = ""
